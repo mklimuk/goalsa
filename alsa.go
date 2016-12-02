@@ -2,8 +2,8 @@
 //
 // See LICENSE file for terms and conditions.
 
-// Package alsa provides Go bindings to the ALSA library.
-package alsa
+// Package goalsa provides Go bindings to the ALSA library.
+package goalsa
 
 import (
 	"errors"
@@ -304,4 +304,14 @@ func (p *PlaybackDevice) Write(buffer interface{}) (samples int, err error) {
 	}
 	samples = int(ret) * p.Channels
 	return
+}
+
+// Drop stream, this function stops the PCM immediately.
+// The pending samples on the buffer are ignored.
+func (p *PlaybackDevice) Drop() error {
+	var ret int
+	if ret = C.snd_pcm_drop(handle.cHandle); ret < 0 {
+		return createError("Could not drop the stream", C.int(ret))
+	}
+	return nil
 }

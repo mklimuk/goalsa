@@ -2,7 +2,7 @@
 //
 // See LICENSE file for terms and conditions.
 
-package alsa
+package goalsa
 
 import (
 	"testing"
