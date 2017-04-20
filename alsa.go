@@ -45,11 +45,16 @@ const (
 	FormatFloat64BE = C.SND_PCM_FORMAT_FLOAT64_BE
 )
 
+const card = "default"
+const mixer = "Master"
+
 var (
 	// ErrOverrun signals an overrun error
 	ErrOverrun = errors.New("overrun")
 	// ErrUnderrun signals an underrun error
 	ErrUnderrun = errors.New("underrun")
+	// ErrSize signals wrong element size
+	ErrSize = errors.New("Slice element size does not correspond to the device sample size")
 )
 
 // BufferParams specifies the buffer parameters of a device.
@@ -88,41 +93,33 @@ func (d *device) createDevice(deviceName string, channels int, format Format, ra
 	}
 	runtime.SetFinalizer(d, (*device).Close)
 	var hwParams *C.snd_pcm_hw_params_t
-	ret = C.snd_pcm_hw_params_malloc(&hwParams)
-	if ret < 0 {
+	if ret = C.snd_pcm_hw_params_malloc(&hwParams); ret < 0 {
 		return createError("could not alloc hw params", ret)
 	}
 	defer C.snd_pcm_hw_params_free(hwParams)
-	ret = C.snd_pcm_hw_params_any(d.h, hwParams)
-	if ret < 0 {
+	if ret = C.snd_pcm_hw_params_any(d.h, hwParams); ret < 0 {
 		return createError("could not set default hw params", ret)
 	}
-	ret = C.snd_pcm_hw_params_set_access(d.h, hwParams, C.SND_PCM_ACCESS_RW_INTERLEAVED)
-	if ret < 0 {
+	if ret = C.snd_pcm_hw_params_set_access(d.h, hwParams, C.SND_PCM_ACCESS_RW_INTERLEAVED); ret < 0 {
 		return createError("could not set access params", ret)
 	}
-	ret = C.snd_pcm_hw_params_set_format(d.h, hwParams, C.snd_pcm_format_t(format))
-	if ret < 0 {
+	if ret = C.snd_pcm_hw_params_set_format(d.h, hwParams, C.snd_pcm_format_t(format)); ret < 0 {
 		return createError("could not set format params", ret)
 	}
-	ret = C.snd_pcm_hw_params_set_channels(d.h, hwParams, C.uint(channels))
-	if ret < 0 {
+	if ret = C.snd_pcm_hw_params_set_channels(d.h, hwParams, C.uint(channels)); ret < 0 {
 		return createError("could not set channels params", ret)
 	}
-	ret = C.snd_pcm_hw_params_set_rate(d.h, hwParams, C.uint(rate), 0)
-	if ret < 0 {
+	if ret = C.snd_pcm_hw_params_set_rate(d.h, hwParams, C.uint(rate), 0); ret < 0 {
 		return createError("could not set rate params", ret)
 	}
 	var bufferSize = C.snd_pcm_uframes_t(bufferParams.BufferFrames)
 	if bufferParams.BufferFrames == 0 {
 		// Default buffer size: max buffer size
-		ret = C.snd_pcm_hw_params_get_buffer_size_max(hwParams, &bufferSize)
-		if ret < 0 {
+		if ret = C.snd_pcm_hw_params_get_buffer_size_max(hwParams, &bufferSize); ret < 0 {
 			return createError("could not get buffer size", ret)
 		}
 	}
-	ret = C.snd_pcm_hw_params_set_buffer_size_near(d.h, hwParams, &bufferSize)
-	if ret < 0 {
+	if ret = C.snd_pcm_hw_params_set_buffer_size_near(d.h, hwParams, &bufferSize); ret < 0 {
 		return createError("could not set buffer size", ret)
 	}
 	// Default period size: 1/8 of a second
@@ -132,17 +129,14 @@ func (d *device) createDevice(deviceName string, channels int, format Format, ra
 	} else if bufferParams.Periods > 0 {
 		periodFrames = C.snd_pcm_uframes_t(int(bufferSize) / bufferParams.Periods)
 	}
-	ret = C.snd_pcm_hw_params_set_period_size_near(d.h, hwParams, &periodFrames, nil)
-	if ret < 0 {
+	if ret = C.snd_pcm_hw_params_set_period_size_near(d.h, hwParams, &periodFrames, nil); ret < 0 {
 		return createError("could not set period size", ret)
 	}
 	var periods = C.uint(0)
-	ret = C.snd_pcm_hw_params_get_periods(hwParams, &periods, nil)
-	if ret < 0 {
+	if ret = C.snd_pcm_hw_params_get_periods(hwParams, &periods, nil); ret < 0 {
 		return createError("could not get periods", ret)
 	}
-	ret = C.snd_pcm_hw_params(d.h, hwParams)
-	if ret < 0 {
+	if ret = C.snd_pcm_hw_params(d.h, hwParams); ret < 0 {
 		return createError("could not set hw params", ret)
 	}
 	d.frames = int(periodFrames)
@@ -179,6 +173,63 @@ func (d device) formatSampleSize() (s int) {
 	panic("unsupported format")
 }
 
+func (d *device) SetMasterVolume(volume int) error {
+	var (
+		handle *C.snd_mixer_t
+		ret    C.int
+	)
+	if ret = C.snd_mixer_open(&handle, 0); ret < 0 {
+		return createError("could not open mixer", ret)
+	}
+	defer C.snd_mixer_close(handle)
+
+	c := C.CString(card)
+	defer C.free(unsafe.Pointer(c))
+	if ret = C.snd_mixer_attach(handle, c); ret != nil {
+		return createError("could not attach to mixer", ret)
+	}
+	/*
+		is this really required?
+		if ret = C.snd_mixer_selem_register(handle, nil, nil); ret != nil {
+			return createError("could not register simple element class", ret)
+		}
+	*/
+	if ret = C.snd_mixer_load(handle); ret < 0 {
+		return createError("could not load mixer handle", ret)
+	}
+
+	//sid is a mixer simple element identifier
+	var sid *C.snd_mixer_selem_id_t
+	if ret = C.snd_mixer_selem_id_alloca(&sid); ret < 0 {
+		return createError("could not allocate simple element pointer", ret)
+	}
+	defer C.snd_mixer_selem_id_free(sid)
+
+	if ret = C.snd_mixer_selem_id_set_index(sid, 0); ret < 0 {
+		return createError("could set simple element id index", ret)
+	}
+	m := C.CString(mixer)
+	defer C.free(unsafe.Pointer(m))
+	if ret = C.snd_mixer_selem_id_set_name(sid, m); ret < 0 {
+		return createError("could not select simple element id name", ret)
+	}
+	// getting the mixer line
+	var elem *C.snd_mixer_elem_t
+	elem = C.snd_mixer_find_selem(handle, sid)
+	var (
+		min C.long
+		max C.long
+	)
+	if ret = C.snd_mixer_selem_get_playback_volume_range(elem, &min, &max); ret < 0 {
+		return createError("could not get simple element volume range", ret)
+	}
+	vol := C.long(volume)
+	if ret = C.snd_mixer_selem_set_playback_volume_all(elem, vol*max/100); ret < 0 {
+		return createError("could not set playback volume", ret)
+	}
+	return nil
+}
+
 // CaptureDevice is an ALSA device configured to record audio.
 type CaptureDevice struct {
 	device
@@ -201,27 +252,25 @@ func (c *CaptureDevice) Read(buffer interface{}) (samples int, err error) {
 		bufferType.Kind() == reflect.Slice) {
 		return 0, errors.New("Read requires an array type")
 	}
-
-	sizeError := errors.New("Read requires a matching sample size")
 	switch bufferType.Elem().Kind() {
 	case reflect.Int8:
 		if c.formatSampleSize() != 1 {
-			return 0, sizeError
+			return 0, ErrSize
 		}
 	case reflect.Int16:
 		if c.formatSampleSize() != 2 {
-			return 0, sizeError
+			return 0, ErrSize
 		}
 	case reflect.Int32, reflect.Float32:
 		if c.formatSampleSize() != 4 {
-			return 0, sizeError
+			return 0, ErrSize
 		}
 	case reflect.Float64:
 		if c.formatSampleSize() != 8 {
-			return 0, sizeError
+			return 0, ErrSize
 		}
 	default:
-		return 0, errors.New("Read does not support this format")
+		return 0, errors.New("Unsupported sample format")
 	}
 
 	val := reflect.ValueOf(buffer)
@@ -265,24 +314,22 @@ func (p *PlaybackDevice) Write(buffer interface{}) (samples int, err error) {
 		bufferType.Kind() == reflect.Slice) {
 		return 0, errors.New("Write requires an array type")
 	}
-
-	sizeError := errors.New("Write requires a matching sample size")
 	switch bufferType.Elem().Kind() {
 	case reflect.Int8:
 		if p.formatSampleSize() != 1 {
-			return 0, sizeError
+			return 0, ErrSize
 		}
 	case reflect.Int16:
 		if p.formatSampleSize() != 2 {
-			return 0, sizeError
+			return 0, ErrSize
 		}
 	case reflect.Int32, reflect.Float32:
 		if p.formatSampleSize() != 4 {
-			return 0, sizeError
+			return 0, ErrSize
 		}
 	case reflect.Float64:
 		if p.formatSampleSize() != 8 {
-			return 0, sizeError
+			return 0, ErrSize
 		}
 	default:
 		return 0, errors.New("Write does not support this format")
