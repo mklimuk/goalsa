@@ -1,0 +1,6 @@
+package: github.com/mklimuk/goalsa
+import: []
+testImport:
+- package: github.com/cocoonlife/testify
+  subpackages:
+  - assert

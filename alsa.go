@@ -185,9 +185,7 @@ func (d *device) SetMasterVolume(volume int) error {
 
 	c := C.CString(card)
 	defer C.free(unsafe.Pointer(c))
-	if ret = C.snd_mixer_attach(handle, c); ret != nil {
-		return createError("could not attach to mixer", ret)
-	}
+	C.snd_mixer_attach(handle, c)
 	/*
 		is this really required?
 		if ret = C.snd_mixer_selem_register(handle, nil, nil); ret != nil {
@@ -200,19 +198,16 @@ func (d *device) SetMasterVolume(volume int) error {
 
 	//sid is a mixer simple element identifier
 	var sid *C.snd_mixer_selem_id_t
-	if ret = C.snd_mixer_selem_id_alloca(&sid); ret < 0 {
+	if ret = C.snd_mixer_selem_id_malloc(&sid); ret < 0 {
 		return createError("could not allocate simple element pointer", ret)
 	}
 	defer C.snd_mixer_selem_id_free(sid)
 
-	if ret = C.snd_mixer_selem_id_set_index(sid, 0); ret < 0 {
-		return createError("could set simple element id index", ret)
-	}
+	C.snd_mixer_selem_id_set_index(sid, 0)
 	m := C.CString(mixer)
 	defer C.free(unsafe.Pointer(m))
-	if ret = C.snd_mixer_selem_id_set_name(sid, m); ret < 0 {
-		return createError("could not select simple element id name", ret)
-	}
+	C.snd_mixer_selem_id_set_name(sid, m)
+
 	// getting the mixer line
 	var elem *C.snd_mixer_elem_t
 	elem = C.snd_mixer_find_selem(handle, sid)
@@ -356,9 +351,9 @@ func (p *PlaybackDevice) Write(buffer interface{}) (samples int, err error) {
 // Drop stream, this function stops the PCM immediately.
 // The pending samples on the buffer are ignored.
 func (p *PlaybackDevice) Drop() error {
-	var ret int
-	if ret = C.snd_pcm_drop(handle.cHandle); ret < 0 {
-		return createError("Could not drop the stream", C.int(ret))
+	var ret C.int
+	if ret = C.snd_pcm_drop(p.h); ret < 0 {
+		return createError("Could not drop the stream", ret)
 	}
 	return nil
 }
