@@ -225,6 +225,62 @@ func (d *device) SetMasterVolume(volume int) error {
 	return nil
 }
 
+func (d *device) GetMasterVolume() int {
+	var (
+		handle *C.snd_mixer_t
+		ret    C.int
+	)
+	if ret = C.snd_mixer_open(&handle, 0); ret < 0 {
+		return createError("could not open mixer", ret)
+	}
+	defer C.snd_mixer_close(handle)
+
+	c := C.CString(card)
+	defer C.free(unsafe.Pointer(c))
+	C.snd_mixer_attach(handle, c)
+	/*
+		is this really required?
+		if ret = C.snd_mixer_selem_register(handle, nil, nil); ret != nil {
+			return createError("could not register simple element class", ret)
+		}
+	*/
+	if ret = C.snd_mixer_load(handle); ret < 0 {
+		return createError("could not load mixer handle", ret)
+	}
+
+	//sid is a mixer simple element identifier
+	var sid *C.snd_mixer_selem_id_t
+	if ret = C.snd_mixer_selem_id_malloc(&sid); ret < 0 {
+		return createError("could not allocate simple element pointer", ret)
+	}
+	defer C.snd_mixer_selem_id_free(sid)
+
+	C.snd_mixer_selem_id_set_index(sid, 0)
+	m := C.CString(mixer)
+	defer C.free(unsafe.Pointer(m))
+	C.snd_mixer_selem_id_set_name(sid, m)
+
+	// getting the mixer line
+	var elem *C.snd_mixer_elem_t
+	elem = C.snd_mixer_find_selem(handle, sid)
+	var (
+		min    C.long
+		max    C.long
+		outvol C.long
+	)
+	if ret = C.snd_mixer_selem_get_playback_volume_range(elem, &min, &max); ret < 0 {
+		return createError("could not get simple element volume range", ret)
+	}
+
+	if ret = C.snd_mixer_selem_get_playback_volume(elem, C.SND_MIXER_SCHN_MONO, &outvol); ret < 0 {
+		return createError("could not get playback volume", ret)
+	}
+	outvol -= min
+	max -= min
+	outvol = 100 * outvol / max
+	return int(outvol)
+}
+
 // CaptureDevice is an ALSA device configured to record audio.
 type CaptureDevice struct {
 	device
