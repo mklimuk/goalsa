@@ -225,13 +225,13 @@ func (d *device) SetMasterVolume(volume int) error {
 	return nil
 }
 
-func (d *device) GetMasterVolume() int {
+func (d *device) GetMasterVolume() (int, error) {
 	var (
 		handle *C.snd_mixer_t
 		ret    C.int
 	)
 	if ret = C.snd_mixer_open(&handle, 0); ret < 0 {
-		return createError("could not open mixer", ret)
+		return 0, createError("could not open mixer", ret)
 	}
 	defer C.snd_mixer_close(handle)
 
@@ -245,13 +245,13 @@ func (d *device) GetMasterVolume() int {
 		}
 	*/
 	if ret = C.snd_mixer_load(handle); ret < 0 {
-		return createError("could not load mixer handle", ret)
+		return 0, createError("could not load mixer handle", ret)
 	}
 
 	//sid is a mixer simple element identifier
 	var sid *C.snd_mixer_selem_id_t
 	if ret = C.snd_mixer_selem_id_malloc(&sid); ret < 0 {
-		return createError("could not allocate simple element pointer", ret)
+		return 0, createError("could not allocate simple element pointer", ret)
 	}
 	defer C.snd_mixer_selem_id_free(sid)
 
@@ -269,16 +269,16 @@ func (d *device) GetMasterVolume() int {
 		outvol C.long
 	)
 	if ret = C.snd_mixer_selem_get_playback_volume_range(elem, &min, &max); ret < 0 {
-		return createError("could not get simple element volume range", ret)
+		return 0, createError("could not get simple element volume range", ret)
 	}
 
 	if ret = C.snd_mixer_selem_get_playback_volume(elem, C.SND_MIXER_SCHN_MONO, &outvol); ret < 0 {
-		return createError("could not get playback volume", ret)
+		return 0, createError("could not get playback volume", ret)
 	}
 	outvol -= min
 	max -= min
 	outvol = 100 * outvol / max
-	return int(outvol)
+	return int(outvol), nil
 }
 
 // CaptureDevice is an ALSA device configured to record audio.
