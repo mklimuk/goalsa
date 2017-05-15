@@ -46,7 +46,7 @@ const (
 )
 
 const card = "default"
-const mixer = "Master"
+const mixer = "PCM"
 
 var (
 	// ErrOverrun signals an overrun error
@@ -186,12 +186,11 @@ func (d *device) SetMasterVolume(volume int) error {
 	c := C.CString(card)
 	defer C.free(unsafe.Pointer(c))
 	C.snd_mixer_attach(handle, c)
-	/*
-		is this really required?
-		if ret = C.snd_mixer_selem_register(handle, nil, nil); ret != nil {
-			return createError("could not register simple element class", ret)
-		}
-	*/
+
+	if ret = C.snd_mixer_selem_register(handle, nil, nil); ret < 0 {
+		return createError("could not register simple element class", ret)
+	}
+
 	if ret = C.snd_mixer_load(handle); ret < 0 {
 		return createError("could not load mixer handle", ret)
 	}
@@ -212,14 +211,17 @@ func (d *device) SetMasterVolume(volume int) error {
 	var elem *C.snd_mixer_elem_t
 	elem = C.snd_mixer_find_selem(handle, sid)
 	var (
-		min C.long
-		max C.long
+		min   C.long
+		max   C.long
+		total C.long
 	)
 	if ret = C.snd_mixer_selem_get_playback_volume_range(elem, &min, &max); ret < 0 {
 		return createError("could not get simple element volume range", ret)
 	}
 	vol := C.long(volume)
-	if ret = C.snd_mixer_selem_set_playback_volume_all(elem, vol*max/100); ret < 0 {
+	total = max - min
+	vol = vol*total/100 + min
+	if ret = C.snd_mixer_selem_set_playback_volume_all(elem, vol); ret < 0 {
 		return createError("could not set playback volume", ret)
 	}
 	return nil
@@ -238,12 +240,11 @@ func (d *device) GetMasterVolume() (int, error) {
 	c := C.CString(card)
 	defer C.free(unsafe.Pointer(c))
 	C.snd_mixer_attach(handle, c)
-	/*
-		is this really required?
-		if ret = C.snd_mixer_selem_register(handle, nil, nil); ret != nil {
-			return createError("could not register simple element class", ret)
-		}
-	*/
+
+	if ret = C.snd_mixer_selem_register(handle, nil, nil); ret < 0 {
+		return 0, createError("could not register simple element class", ret)
+	}
+
 	if ret = C.snd_mixer_load(handle); ret < 0 {
 		return 0, createError("could not load mixer handle", ret)
 	}
