@@ -54,25 +54,14 @@ var (
 	ErrUnderrun = errors.New("underrun")
 )
 
-// BufferParams specify the buffer parameters of a device.
-type BufferParams struct {
-	BufferFrames int
-	PeriodFrames int
-	Periods      int
-}
-
-//AudioParams describe audio data parameters expected by the device.
-type AudioParams struct {
+type device struct {
+	h            *C.snd_pcm_t
 	Channels     int
 	SamplingRate int
 	SampleFormat SampleFormat
-}
-
-type device struct {
-	h            *C.snd_pcm_t
-	Audio        *AudioParams
-	BufferParams BufferParams
-	frames       int
+	BufferFrames int
+	PeriodFrames int
+	Periods      int
 }
 
 func createError(errorMsg string, errorCode C.int) (err error) {
@@ -81,7 +70,7 @@ func createError(errorMsg string, errorCode C.int) (err error) {
 	return
 }
 
-func (d *device) initDevice(deviceName string, audio *AudioParams, playback bool, bufferParams BufferParams) (err error) {
+func (d *device) initDevice(deviceName string, playback bool, sf SampleFormat, channels, rate, bufFrames, pdFrames, pds int) (err error) {
 	deviceCString := C.CString(deviceName)
 	defer C.free(unsafe.Pointer(deviceCString))
 	var ret C.int
@@ -105,17 +94,17 @@ func (d *device) initDevice(deviceName string, audio *AudioParams, playback bool
 	if ret = C.snd_pcm_hw_params_set_access(d.h, hwParams, C.SND_PCM_ACCESS_RW_INTERLEAVED); ret < 0 {
 		return createError("could not set access params", ret)
 	}
-	if ret = C.snd_pcm_hw_params_set_format(d.h, hwParams, C.snd_pcm_format_t(audio.SampleFormat)); ret < 0 {
+	if ret = C.snd_pcm_hw_params_set_format(d.h, hwParams, C.snd_pcm_format_t(sf)); ret < 0 {
 		return createError("could not set format params", ret)
 	}
-	if ret = C.snd_pcm_hw_params_set_channels(d.h, hwParams, C.uint(audio.Channels)); ret < 0 {
+	if ret = C.snd_pcm_hw_params_set_channels(d.h, hwParams, C.uint(channels)); ret < 0 {
 		return createError("could not set channels params", ret)
 	}
-	if ret = C.snd_pcm_hw_params_set_rate(d.h, hwParams, C.uint(audio.SamplingRate), 0); ret < 0 {
+	if ret = C.snd_pcm_hw_params_set_rate(d.h, hwParams, C.uint(rate), 0); ret < 0 {
 		return createError("could not set rate params", ret)
 	}
-	var bufferSize = C.snd_pcm_uframes_t(bufferParams.BufferFrames)
-	if bufferParams.BufferFrames == 0 {
+	var bufferSize = C.snd_pcm_uframes_t(bufFrames)
+	if bufFrames == 0 {
 		// Default buffer size: max buffer size
 		if ret = C.snd_pcm_hw_params_get_buffer_size_max(hwParams, &bufferSize); ret < 0 {
 			return createError("could not get buffer size", ret)
@@ -125,11 +114,11 @@ func (d *device) initDevice(deviceName string, audio *AudioParams, playback bool
 		return createError("could not set buffer size", ret)
 	}
 	// Default period size: 1/8 of a second
-	var periodFrames = C.snd_pcm_uframes_t(audio.SamplingRate / 8)
-	if bufferParams.PeriodFrames > 0 {
-		periodFrames = C.snd_pcm_uframes_t(bufferParams.PeriodFrames)
-	} else if bufferParams.Periods > 0 {
-		periodFrames = C.snd_pcm_uframes_t(int(bufferSize) / bufferParams.Periods)
+	var periodFrames = C.snd_pcm_uframes_t(pdFrames / 8)
+	if pdFrames > 0 {
+		periodFrames = C.snd_pcm_uframes_t(pdFrames)
+	} else if pds > 0 {
+		periodFrames = C.snd_pcm_uframes_t(int(bufferSize) / pds)
 	}
 	if ret = C.snd_pcm_hw_params_set_period_size_near(d.h, hwParams, &periodFrames, nil); ret < 0 {
 		return createError("could not set period size", ret)
@@ -141,11 +130,10 @@ func (d *device) initDevice(deviceName string, audio *AudioParams, playback bool
 	if ret = C.snd_pcm_hw_params(d.h, hwParams); ret < 0 {
 		return createError("could not set hw params", ret)
 	}
-	d.frames = int(periodFrames)
-	d.Audio = audio
-	d.BufferParams.BufferFrames = int(bufferSize)
-	d.BufferParams.PeriodFrames = int(periodFrames)
-	d.BufferParams.Periods = int(periods)
+	d.Channels = channels
+	d.BufferFrames = int(bufferSize)
+	d.PeriodFrames = int(periodFrames)
+	d.Periods = int(periods)
 	return
 }
 
@@ -164,7 +152,7 @@ func (d *device) Close() error {
 }
 
 func (d device) formatSampleSize() (s int) {
-	switch d.Audio.SampleFormat {
+	switch d.SampleFormat {
 	case SampleFormatS8, SampleFormatU8:
 		return 1
 	case SampleFormatS16LE, SampleFormatS16BE, SampleFormatU16LE, SampleFormatU16BE:
@@ -292,9 +280,9 @@ type CaptureDevice struct {
 }
 
 // NewCaptureDevice creates a new CaptureDevice object.
-func NewCaptureDevice(deviceName string, audio *AudioParams, bufferParams BufferParams) (c *CaptureDevice, err error) {
+func NewCaptureDevice(deviceName string, sf SampleFormat, channels, rate, bufFrames, pdFrames, pds int) (c *CaptureDevice, err error) {
 	c = new(CaptureDevice)
-	err = c.initDevice(deviceName, audio, false, bufferParams)
+	err = c.initDevice(deviceName, false, sf, channels, rate, bufFrames, pdFrames, pds)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +291,7 @@ func NewCaptureDevice(deviceName string, audio *AudioParams, bufferParams Buffer
 
 // Read reads samples into a buffer and returns the amount read.
 func (c *CaptureDevice) Read(buffer []byte) (samples int, err error) {
-	var frames = C.snd_pcm_uframes_t(len(buffer) / c.Audio.Channels)
+	var frames = C.snd_pcm_uframes_t(len(buffer) / c.Channels)
 	ret := C.snd_pcm_readi(c.h, unsafe.Pointer(&buffer[0]), frames)
 	if ret == -C.EPIPE {
 		C.snd_pcm_prepare(c.h)
@@ -311,7 +299,7 @@ func (c *CaptureDevice) Read(buffer []byte) (samples int, err error) {
 	} else if ret < 0 {
 		return 0, createError("read error", C.int(ret))
 	}
-	samples = int(ret) * c.Audio.Channels
+	samples = int(ret) * c.Channels
 	return
 }
 
@@ -321,9 +309,9 @@ type PlaybackDevice struct {
 }
 
 // NewPlaybackDevice creates a new PlaybackDevice object.
-func NewPlaybackDevice(deviceName string, audio *AudioParams, bufferParams BufferParams) (p *PlaybackDevice, err error) {
+func NewPlaybackDevice(deviceName string, sf SampleFormat, channels, rate, bufFrames, pdFrames, pds int) (p *PlaybackDevice, err error) {
 	p = new(PlaybackDevice)
-	err = p.initDevice(deviceName, audio, true, bufferParams)
+	err = p.initDevice(deviceName, true, sf, channels, rate, bufFrames, pdFrames, pds)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +320,7 @@ func NewPlaybackDevice(deviceName string, audio *AudioParams, bufferParams Buffe
 
 // Write writes a buffer of data to a playback device.
 func (p *PlaybackDevice) Write(buffer []byte) (samples int, err error) {
-	var frames = C.snd_pcm_uframes_t(len(buffer) / p.Audio.Channels)
+	var frames = C.snd_pcm_uframes_t(len(buffer) / p.Channels)
 	ret := C.snd_pcm_writei(p.h, unsafe.Pointer(&buffer[0]), frames)
 	if ret == -C.EPIPE {
 		// this allows us to write back to the device after underrun
@@ -341,7 +329,7 @@ func (p *PlaybackDevice) Write(buffer []byte) (samples int, err error) {
 	} else if ret < 0 {
 		return 0, createError("write error", C.int(ret))
 	}
-	samples = int(ret) * p.Audio.Channels
+	samples = int(ret) * p.Channels
 	return
 }
 
